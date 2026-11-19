@@ -1,0 +1,65 @@
+# Intel IPU6 camera HAL (libcamhal), built for ipu6ep (Alder/Raptor Lake),
+# with three Galaxy Book3 Ultra fixes to Intel's config:
+#  - the OV02C10 sits on CSI-2 port 0, which Intel's profile doesn't list
+#  - use the OV02C10_1SG204N3 tuning (looked better than 1BG203N3 here)
+#  - flip the image 180 degrees with the sensor's own flips (it is mounted
+#    upside down; Intel's HAL ignores the driver's rotation=180)
+# epoch=1 keeps yay from replacing this with the AUR version.
+
+pkgname=intel-ipu6-camera-hal-git
+_pkgname=ipu6-camera-hal
+_commit=7ccab62d133e053c8628f3591b636a761f06c956
+epoch=1
+pkgver=r128.7ccab62
+pkgrel=1
+pkgdesc="Intel IPU6 camera HAL (ipu6ep), with Galaxy Book3 Ultra OV02C10 fixes"
+arch=('x86_64')
+url="https://github.com/intel/ipu6-camera-hal"
+license=('Apache-2.0')
+depends=('intel-ipu6-camera-bin' 'libdrm')
+makedepends=('git' 'cmake')
+provides=('ipu6-camera-hal')
+conflicts=('intel-ipu6ep-camera-hal-git')
+replaces=('intel-ipu6ep-camera-hal-git')
+source=("git+${url}.git#commit=${_commit}"
+        'ov02c10-flip.py')
+sha256sums=('SKIP'
+            'SKIP')
+
+prepare() {
+  cd "$_pkgname/config/linux/ipu6ep"
+  sed -i 's/ov02c10-uf-1,ov02c10-uf-2,/ov02c10-uf-0,ov02c10-uf-1,ov02c10-uf-2,/' \
+    libcamhal_profile.xml
+  grep -q 'ov02c10-uf-0' libcamhal_profile.xml
+
+  # First OV02C10 <Sensor> section: tuning and graph settings -> 1SG204N3.
+  python3 - <<'PY'
+p = 'sensors/ov02c10-uf.xml'
+s = open(p).read()
+end = s.index('</Sensor>')
+first = s[:end].replace('OV02C10_1BG203N3_ADL', 'OV02C10_1SG204N3_ADL')
+open(p, 'w').write(first + s[end:])
+PY
+  grep -q 'OV02C10_1SG204N3_ADL' sensors/ov02c10-uf.xml
+
+  python3 "$srcdir/ov02c10-flip.py" sensors/ov02c10-uf.xml
+}
+
+build() {
+  cmake -B "$_pkgname/build" -S "$_pkgname" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DCMAKE_INSTALL_LIBDIR=lib \
+    -DBUILD_CAMHAL_ADAPTOR=ON \
+    -DBUILD_CAMHAL_PLUGIN=ON \
+    -DIPU_VERSIONS="ipu6ep" \
+    -DUSE_PG_LITE_PIPE=ON \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_C_FLAGS="-Wno-error=unused-but-set-variable" \
+    -DCMAKE_CXX_FLAGS="-Wno-error=unused-but-set-variable"
+  cmake --build "$_pkgname/build"
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install "$_pkgname/build"
+}

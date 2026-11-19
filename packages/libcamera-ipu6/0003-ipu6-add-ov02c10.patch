@@ -1,0 +1,164 @@
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -830,6 +830,24 @@
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("ov01a10", CameraSensorHelperOv01a10)
+ 
++/*
++ * OmniVision OV02C10
++ *
++ * 2MP sensor (1928x1092), 10-bit Bayer. Linear analogue gain,
++ * register / 16. Black level 0x40 at 10 bits (from the kernel driver).
++ * Based on libcamera patchwork 28174 (Martin Neiva de Carvalho).
++ */
++class CameraSensorHelperOv02c10 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperOv02c10()
++	{
++		blackLevel_ = 4096;
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 16 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("ov02c10", CameraSensorHelperOv02c10)
++
+ #endif /* __DOXYGEN__ */
+ 
+ } /* namespace ipa */
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -339,6 +339,20 @@
+ 				.hblankDelay = 0
+ 			},
+ 		} },
++		{ "ov02c10", {
++			/* 1.12um x 1.12um pixel size */
++			.unitCellSize = { 1120, 1120 },
++			.testPatternModes = {
++				{ controls::draft::TestPatternModeOff, 0 },
++				{ controls::draft::TestPatternModeColorBars, 1 },
++			},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 0,
++				.hblankDelay = 0
++			},
++		} },
+ 		{ "ov2685", {
+ 			.unitCellSize = { 1750, 1750 },
+ 			.testPatternModes = {
+--- a/src/libcamera/pipeline/ipu6/ipu6.cpp
++++ b/src/libcamera/pipeline/ipu6/ipu6.cpp
+@@ -14,6 +14,8 @@
+ #include <chrono>
+ #include <algorithm>
+ #include <climits>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <map>
+ #include <memory>
+@@ -59,11 +61,15 @@
+ 
+ LOG_DEFINE_CATEGORY(IPU6)
+ 
+-/* Supported output resolutions for OV01A10 (from HAL XML config) */
++/*
++ * Supported output resolutions (from the HAL XML configs). 1280x720 stays
++ * first as the default; 1920x1080 is OV02C10-only (ov02c10-uf.xml).
++ */
+ static const std::vector<Size> kSupportedSizes = {
+ 	{ 1280, 720 },
+ 	{ 640, 480 },
+ 	{ 640, 360 },
++	{ 1920, 1080 },
+ };
+ 
+ class IPU6CameraData : public Camera::Private
+@@ -110,7 +116,8 @@
+ 	int halStreamId_ = -1;
+ 
+ 	/* Two internal buffers — HAL needs one queued while we process the other */
+-	static constexpr int kNumBufs = 2;
++	/* >= the HAL maxRequestsInflight (5 for ov02c10) or frames get dropped */
++	static constexpr int kNumBufs = 6;
+ 	void *halBufferAddr_[kNumBufs] = {};
+ 	int halBufferSize_ = 0;
+ 	icamera::camera_buffer_t halBuffer_[kNumBufs];
+@@ -242,6 +249,66 @@
+ 		/* Set 3A parameters — HAL won't process new frames without this */
+ 		halParams_.setAeMode(icamera::AE_MODE_AUTO);
+ 		halParams_.setAntiBandingMode(icamera::ANTIBANDING_MODE_AUTO);
++
++		/*
++		 * Optional image-quality overrides (unset = tuning defaults).
++		 * IPU6_NR_OVERALL / IPU6_NR_SPATIAL / IPU6_NR_TEMPORAL and
++		 * IPU6_SHARPNESS take integers in -100..100.
++		 */
++		auto envInt = [](const char *name, int &out) {
++			const char *v = std::getenv(name);
++			if (!v || !*v)
++				return false;
++			out = std::clamp(std::atoi(v), -100, 100);
++			return true;
++		};
++		icamera::camera_nr_level_t nr = { 0, 0, 0 };
++		bool haveNr = envInt("IPU6_NR_OVERALL", nr.overall);
++		haveNr |= envInt("IPU6_NR_SPATIAL", nr.spatial);
++		haveNr |= envInt("IPU6_NR_TEMPORAL", nr.temporal);
++		if (haveNr) {
++			halParams_.setNrLevel(nr);
++			LOG(IPU6, Info) << "NR level overall=" << nr.overall
++					<< " spatial=" << nr.spatial
++					<< " temporal=" << nr.temporal;
++		}
++		icamera::camera_image_enhancement_t ie = {};
++		if (envInt("IPU6_SHARPNESS", ie.sharpness)) {
++			halParams_.setImageEnhancement(ie);
++			LOG(IPU6, Info) << "Sharpness " << ie.sharpness;
++		}
++
++		/*
++		 * IPU6_AWB_SHIFT="r,g,b" (each 0..255, equal values = neutral):
++		 * shifts the AIQ white balance, e.g. "140,120,140" pulls out green.
++		 */
++		if (const char *v = std::getenv("IPU6_AWB_SHIFT")) {
++			icamera::camera_awb_gains_t shift = {};
++			if (std::sscanf(v, "%d,%d,%d", &shift.r_gain,
++					&shift.g_gain, &shift.b_gain) == 3) {
++				shift.r_gain = std::clamp(shift.r_gain, 0, 255);
++				shift.g_gain = std::clamp(shift.g_gain, 0, 255);
++				shift.b_gain = std::clamp(shift.b_gain, 0, 255);
++				halParams_.setAwbGainShift(shift);
++				LOG(IPU6, Info) << "AWB shift r=" << shift.r_gain
++						<< " g=" << shift.g_gain
++						<< " b=" << shift.b_gain;
++			}
++		}
++
++		/*
++		 * IPU6_FPS_RANGE="min,max": AE frame-rate range. A higher min
++		 * keeps motion smooth in dim light at the cost of brightness.
++		 */
++		if (const char *v = std::getenv("IPU6_FPS_RANGE")) {
++			icamera::camera_range_t fps = {};
++			if (std::sscanf(v, "%f,%f", &fps.min, &fps.max) == 2 &&
++			    fps.min > 0 && fps.max >= fps.min) {
++				halParams_.setFpsRange(fps);
++				LOG(IPU6, Info) << "FPS range " << fps.min << "-" << fps.max;
++			}
++		}
++
+ 		icamera::camera_set_parameters(cameraId_, halParams_);
+ 	}
+ 
+@@ -299,7 +366,7 @@
+ 	if (streaming_)
+ 		return 0;
+ 
+-	/* Queue both buffers before starting */
++	/* Queue all buffers before starting */
+ 	for (int i = 0; i < kNumBufs; i++) {
+ 		halBuffer_[i].flags = 0;
+ 		halBuffer_[i].sequence = -1;

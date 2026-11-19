@@ -1,0 +1,37 @@
+# Intel IPU6 closed userspace libraries (AIQ 3A, ISP config) from
+# intel/ipu6-camera-bins. Replaces the AUR package of the same name, whose
+# git repository is empty. Firmware is left out: linux-firmware-intel
+# already ships /usr/lib/firmware/intel/ipu/*.
+# epoch=1 keeps yay from replacing this with the AUR version.
+
+pkgname=intel-ipu6-camera-bin
+_pkgname=ipu6-camera-bins
+_commit=30e87664829782811a765b0ca9eea3a878a7ff29
+epoch=1
+pkgver=r92.30e8766
+pkgrel=1
+pkgdesc="Intel IPU6 camera binaries (AIQ libraries, headers), without firmware"
+arch=('x86_64')
+url="https://github.com/intel/ipu6-camera-bins"
+license=('LicenseRef-Intel-Proprietary')
+depends=('glibc')
+provides=('intel-ipu6ep-camera-bin')
+replaces=('intel-ipu6ep-camera-bin')
+options=('!strip')
+makedepends=('git')
+source=("git+${url}.git#commit=${_commit}")
+sha256sums=('SKIP')
+
+package() {
+  cd "$_pkgname"
+  install -dm755 "$pkgdir/usr/lib" "$pkgdir/usr/include"
+  cp -P lib/lib*.so* "$pkgdir/usr/lib/"
+  # The libraries ship only as .so.0; the HAL links against the plain names.
+  local f
+  for f in "$pkgdir"/usr/lib/lib*.so.0; do
+    ln -sf "$(basename "$f")" "${f%.0}"
+  done
+  install -Dm644 -t "$pkgdir/usr/lib/pkgconfig" lib/pkgconfig/*.pc
+  cp -r include/* "$pkgdir/usr/include/"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

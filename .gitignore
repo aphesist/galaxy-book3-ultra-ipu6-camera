@@ -1,0 +1,10 @@
+# makepkg output
+src/
+pkg/
+*.pkg.tar.*
+*.log
+# git sources makepkg clones next to each PKGBUILD
+packages/*/ipu6-drivers/
+packages/*/ipu6-camera-bins/
+packages/*/ipu6-camera-hal/
+packages/*/libcamera/

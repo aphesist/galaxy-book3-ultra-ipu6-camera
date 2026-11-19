@@ -1,0 +1,40 @@
+# Intel IPU6 PSYS kernel module only (DKMS), for kernels >= 6.10 where the
+# IPU6 ISYS driver is in-tree. Unlike AUR intel-ipu6-dkms-git this does NOT
+# install Intel's sensor drivers, so the patched ov02c10 DKMS module
+# (26 MHz clock, rotation, dgain) keeps working.
+
+pkgname=ipu6-psys-dkms
+_pkgname=ipu6-drivers
+_commit=e52f5e8f1da6aac7063358ec85514d603e51e44e
+pkgver=r280.e52f5e8f1
+pkgrel=1
+pkgdesc="Intel IPU6 PSYS kernel module (DKMS), PSYS only"
+arch=('any')
+url="https://github.com/intel/ipu6-drivers"
+license=('GPL-2.0-only')
+depends=('dkms')
+provides=('intel-ipu6-dkms-git')
+conflicts=('intel-ipu6-dkms-git')
+makedepends=('git')
+source=("git+${url}.git#commit=${_commit}"
+        'Makefile'
+        'dkms.conf')
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
+
+prepare() {
+  cd "$_pkgname"
+  # Headers the out-of-tree PSYS needs from the in-tree IPU6 driver (>= 6.10).
+  patch -Np1 < patches/0001-v6.10-IPU6-headers-used-by-PSYS.patch
+}
+
+package() {
+  local dest="$pkgdir/usr/src/ipu6-psys-$pkgver"
+  install -dm755 "$dest/drivers/media/pci/intel"
+  cp -r "$_pkgname/drivers/media/pci/intel/ipu6" "$dest/drivers/media/pci/intel/"
+  cp -r "$_pkgname/include" "$dest/"
+  install -m644 Makefile "$dest/Makefile"
+  sed "s/@PKGVER@/$pkgver/" dkms.conf > "$dest/dkms.conf"
+  install -Dm644 "$_pkgname/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
