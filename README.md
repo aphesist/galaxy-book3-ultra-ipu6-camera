@@ -46,6 +46,10 @@ Fixes needed for this laptop:
 - udev: the PSYS permission rule is installed as `70-` instead of `99-`. As
   `99-` its `uaccess` tag comes after `73-seat-late.rules`, the user never gets
   access to `/dev/ipu-psys0`, and streams fail with "Failed to configure camera".
+- udev: the rule no longer touches GPU render nodes. The AUR rule set them to
+  `video` 0660, so anyone outside the `video` group lost Mesa and Hyprland
+  wouldn't start ("DRI2: failed to load driver"). systemd's default (0666)
+  already lets the camera stack open them.
 
 Every package pins the source commit it was tested with. The AUR-named
 packages carry `epoch=1`, so yay won't replace them with the AUR versions.
